@@ -169,6 +169,9 @@ freeproc(struct proc *p)
   p->killed = 0;
   p->xstate = 0;
   p->state = UNUSED;
+
+  //重置trace_mask参数
+  p->trace_mask = 0;
 }
 
 // Create a user page table for a given process, with no user memory,
@@ -321,6 +324,9 @@ fork(void)
   acquire(&np->lock);
   np->state = RUNNABLE;
   release(&np->lock);
+
+  //子进程继承父进程的trace_mask
+  np->trace_mask = p->trace_mask;
 
   return pid;
 }
@@ -680,4 +686,20 @@ procdump(void)
     printf("%d %s %s", p->pid, state, p->name);
     printf("\n");
   }
+}
+
+//获取当前进程个数，实现sysinfo功能一部分，参照allocproc()函数
+uint
+cnt_procnum(void)
+{
+    struct proc *p;
+    uint cnt = 0;
+
+    for(p = proc; p < &proc[NPROC]; p++){
+        acquire(&p->lock);
+        if(p->state != UNUSED)
+            cnt++;
+        release(&p->lock);
+    }
+    return cnt;
 }

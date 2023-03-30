@@ -101,6 +101,8 @@ extern uint64 sys_unlink(void);
 extern uint64 sys_link(void);
 extern uint64 sys_mkdir(void);
 extern uint64 sys_close(void);
+extern uint64 sys_trace(void);
+extern uint64 sys_sysinfo(void);
 
 // An array mapping syscall numbers from syscall.h
 // to the function that handles the system call.
@@ -126,19 +128,33 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_trace]   sys_trace,
+[SYS_sysinfo] sys_sysinfo,
+};
+
+const static char *syscall_names[] = {
+  "fork",  "exit",  "wait",  "pipe",  "read",  "kill",  "exec",  "fstat",
+  "chdir",  "dup",  "getpid",  "sbrk",  "sleep",  "uptime",  "open",
+  "write",  "mknod",  "unlink",  "link",  "mkdir", "close", "trace", "sysinfo"
 };
 
 void
 syscall(void)
 {
   int num;
-  struct proc *p = myproc();
+  struct proc *p = myproc(); //myproc()给出当前调用系统调用的进程
 
-  num = p->trapframe->a7;
+  num = p->trapframe->a7; //a7中存着进程想要调用的系统调用号
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0
-    p->trapframe->a0 = syscalls[num]();
+    p->trapframe->a0 = syscalls[num](); //通过num找到系统调用函数，a0存储着系统调用的返回值
+
+    int trace_mask = p -> trace_mask; //判断该系统调用是否被trace
+    if((trace_mask >> num) & 1){
+        //输出格式如下：pid：syscall 系统调用名 -> 调用后的返回值
+        printf("%d: syscall %s -> %d\n", p -> pid, syscall_names[num - 1], p -> trapframe -> a0);
+    }
   } else {
     printf("%d %s: unknown sys call %d\n",
             p->pid, p->name, num);

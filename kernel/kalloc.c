@@ -80,3 +80,18 @@ kalloc(void)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
 }
+
+//用于获取空闲内存信息，实现sysinfo功能的一部分
+uint64
+get_freemem(void)
+{
+    uint64 ret = 0;
+    acquire(&kmem.lock); //获取锁
+    struct run *freepage = kmem.freelist;
+    while(freepage){ //遍历freelist
+        freepage = freepage->next;
+        ret++;
+    }
+    release(&kmem.lock);
+    return ret * PGSIZE; //返回时要乘以页的大小
+}

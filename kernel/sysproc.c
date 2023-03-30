@@ -5,6 +5,7 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "sysinfo.h"
 
 uint64
 sys_exit(void)
@@ -90,4 +91,35 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_trace(void)
+{
+    int mask;
+    //syscall.c提供argint、argptr和argstr等工具函数，
+    //用于在进程用户空间获得第 n 个系统调用参数。argint用于获取第n个整数，
+    //存储在int指针中（通过fetchint工具函数完成）。argptr用于获取第n个整数，
+    //将char指针指向它。argstr用于获取第n个整数，该参数是字符串起始地址值，
+    //使用char指针指向它，函数本身返回字符串长度
+    argint(0, &mask);
+    struct proc *cur_proc = myproc();
+    cur_proc -> trace_mask = mask;
+    return 0;
+}
+
+uint64
+sys_sysinfo(void)
+{
+    struct sysinfo info;
+    struct proc *cur_proc = myproc();
+    uint64 user_addr;
+
+    info.freemem = get_freemem();
+    info.nproc = cnt_procnum();
+
+    argaddr(0, &user_addr);
+    if(copyout(cur_proc->pagetable, user_addr, (char *)&info, sizeof(info)) == -1)
+        return -1;
+    return 0;
 }
