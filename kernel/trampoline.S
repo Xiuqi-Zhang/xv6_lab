@@ -28,14 +28,20 @@ uservec:
 
         # save user a0 in sscratch so
         # a0 can be used to get at TRAPFRAME.
+        //交换a0和sscratch的值，目的是使a0空闲并将a0的值暂存在sscratch中
         csrw sscratch, a0
 
         # each process has a separate p->trapframe memory area,
         # but it's mapped to the same virtual address
         # (TRAPFRAME) in every process's user page table.
+        //每个进程的页表的trapframe的地址是一样的，保存在常数TRAPFRAME中
+        //其实就是在虚拟地址空间的顶部
+        //将这个trapframe的地址保存在a0中
         li a0, TRAPFRAME
         
         # save the user registers in TRAPFRAME
+        //用a0来索引trapframe的各个位置，用于保存各个用户寄存器
+        //结果就是各个用户寄存器（除了原a0）的值都被保存在trapframe中
         sd ra, 40(a0)
         sd sp, 48(a0)
         sd gp, 56(a0)
@@ -68,9 +74,12 @@ uservec:
         sd t6, 280(a0)
 
 	# save the user a0 in p->trapframe->a0
+    //原来a0的值在sscratch中，将它也保存在trapframe中
+    //可以看到a0的值在112(a0)位置，a1值在120(a0)位置，是按顺序存储的
         csrr t0, sscratch
         sd t0, 112(a0)
 
+        //把trapframe中原本就保存的内核栈指针，hartid，usertrap地址设置到相应的寄存器中
         # initialize kernel stack pointer, from p->trapframe->kernel_sp
         ld sp, 8(a0)
 
@@ -80,7 +89,7 @@ uservec:
         # load the address of usertrap(), from p->trapframe->kernel_trap
         ld t0, 16(a0)
 
-
+        //跟上面一样，将trapframe保存的内核页表地址保存到t1寄存器
         # fetch the kernel page table address, from p->trapframe->kernel_satp.
         ld t1, 0(a0)
 
@@ -88,12 +97,15 @@ uservec:
         # they use the user page table.
         sfence.vma zero, zero
 
+        //加载内核页表地址到satp（即启用内核页表）
         # install the kernel page table.
         csrw satp, t1
 
         # flush now-stale user entries from the TLB.
+        //刷新TLB缓存
         sfence.vma zero, zero
 
+        //跳到usertrap()函数，其作用是确定trap的原因
         # jump to usertrap(), which does not return
         jr t0
 
