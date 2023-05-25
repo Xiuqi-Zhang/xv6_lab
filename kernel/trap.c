@@ -67,6 +67,11 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
+  } else if(r_scause() == 15 && uncopied_cow(p->pagetable, r_stval())){
+      if(r_stval() < PGSIZE)
+          setkilled(p);
+      if(cowalloc(p->pagetable, r_stval()) < 0)
+          setkilled(p);
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -82,6 +87,40 @@ usertrap(void)
 
   usertrapret();
 }
+
+//实现写时复制，功能是在子进程要修改内容是为子进程申请新的内存
+//复制原内存内容、取消原映射、建立新映射
+int
+cowalloc(pagetable_t pgtbl, uint64 va){
+    pte_t *pte;
+    uint64 pre_pa;
+    uint64 flags;
+    char *newpg;
+    uint64 va_sta;
+
+    pte = walk(pgtbl, va, 0); //找到va对应的页表项
+    if(pte == 0) 
+        return -1;
+    flags = PTE_FLAGS(*pte); //提取标志位
+    pre_pa = PTE2PA(*pte); //找到映射的父进程的物理页框
+
+    if((newpg = kalloc()) == 0) //申请一页新的内存
+        return -1;
+    
+    va_sta = PGROUNDDOWN(va); //找到va对应的页帧的起始地址
+
+    flags &= (~PTE_C); //子进程新获得的复制了的页面不再是cow页
+    flags |= PTE_W; //新页面不再是cow页，可以被修改
+
+    memmove(newpg, (char *)pre_pa, PGSIZE); //将父进程原页框的内容复制到新页框中
+    uvmunmap(pgtbl, va_sta, 1, 1); //取消子进程对父进程原页框的映射
+
+    if(mappages(pgtbl, va_sta, PGSIZE, (uint64)newpg, flags) != 0){ //建立子进程页帧到新页框的映射
+        kfree(newpg); //建立失败则释放新页框
+        return -1;
+    }
+    return 0;
+} 
 
 //
 // return to user space
