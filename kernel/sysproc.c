@@ -75,6 +75,35 @@ int
 sys_pgaccess(void)
 {
   // lab pgtbl: your code here.
+  uint64 st_addr;  //需要检测的起始地址
+  uint64 mask_addr;  //用户区的位示图保存地址
+  uint npages;  //需要检测的页数
+  uint mask;  //位示图
+
+  mask = 0;  //位示图清零
+  pagetable_t pgtbl = myproc()->pagetable;  //需要检测的用户页表
+
+  //从用户空间获取参数
+  argaddr(0, &st_addr);
+  argint(1, (int *)&npages);
+  argaddr(2, &mask_addr);
+
+  //最多检测32页
+  if(npages > 64)
+      return -1;
+
+  //从起始地址所在的页表项开始遍历
+  pte_t* pte = walk(pgtbl, st_addr, 0);
+  for(int i = 0; i < npages; i++){
+      if((pte[i] & PTE_A) && (pte[i] & PTE_V)){
+          mask |= (1 << i);  //第i页的结果填入位示图的第i位
+          pte[i] ^= PTE_A;  //重置访问位
+      }
+  }
+
+  if(copyout(pgtbl, mask_addr, (char *)&mask, sizeof(mask)) == -1)
+     return -1; //将位示图拷贝到用户区
+
   return 0;
 }
 #endif
@@ -100,3 +129,4 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+

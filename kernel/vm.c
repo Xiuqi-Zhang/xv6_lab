@@ -437,3 +437,22 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
     return -1;
   }
 }
+
+void
+vmprint(pagetable_t pgtbl, int depth)
+{
+    if(depth == 0){ //输出顶级页表的地址
+        printf("page table %p\n", pgtbl);
+    }
+    for(int i = 0; i < 512; i++){ //依次遍历页表的512个页表项
+        pte_t pte = pgtbl[i];  //注意：可以用[]来遍历页表
+        if(pte & PTE_V){  //若页表项存在且有效
+            for(int j = 0; j < depth; j++) //按层数输出相应'..'
+                printf(".. ");
+            uint64 pa = PTE2PA(pte); //提取对应页表项的物理地址，即下一级页表的地址
+            printf("..%d: pte %p pa %p\n", i, pte, pa);
+            if(depth < 2) //递归地输出各级页表
+                vmprint((pagetable_t)pa, depth + 1);
+        }
+    }
+}
