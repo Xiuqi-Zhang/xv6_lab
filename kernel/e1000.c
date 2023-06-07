@@ -1,3 +1,5 @@
+#include <stddef.h>
+
 #include "types.h"
 #include "param.h"
 #include "memlayout.h"
@@ -102,7 +104,27 @@ e1000_transmit(struct mbuf *m)
   // the TX descriptor ring so that the e1000 sends it. Stash
   // a pointer so that it can be freed after sending.
   //
-  
+  acquire(&e1000_lock);
+  uint idx = regs[E1000_TDT]; //获取下一个空闲项编号
+  struct tx_desc *desc = &tx_ring[idx];
+  if((desc->status & E1000_TXD_STAT_DD) == 0){ 
+  //若该项的DD位为0，说明这个编号的原来的传送任务没有完成，那也代表环状队列已经满了
+      release(&e1000_lock);
+      return -1;
+  }
+  if(tx_mbufs[idx] != NULL){ //清空该项的上一次的mbuf数据
+      mbuffree(tx_mbufs[idx]);
+      tx_mbufs[idx] = NULL;
+  }
+  //将新数据传入
+  desc->addr = (uint64)m->head;
+  desc->length = m->len;
+  desc->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+
+  tx_mbufs[idx] = m; //tx_mbufs[idx]更新为m，便于清理，就像114行所示
+  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE; //更新环状队列的tail值
+
+  release(&e1000_lock);
   return 0;
 }
 
@@ -115,6 +137,20 @@ e1000_recv(void)
   // Check for packets that have arrived from the e1000
   // Create and deliver an mbuf for each packet (using net_rx()).
   //
+  //一次性接收所有待读取数据包
+  while(1){
+    uint idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE; //tail+1的位置保存着最早的待读取数据包
+    struct rx_desc *desc = &rx_ring[idx]; //获取该描述符
+    if((desc->status & E1000_RXD_STAT_DD) == 0) //如果已经处理完所有待读取数据包则结束
+        return;
+    rx_mbufs[idx]->len = desc->length; //重新设置长度
+    net_rx(rx_mbufs[idx]);  //net_rx()将mbuf转交给相应的网络协议栈处理
+    rx_mbufs[idx] = mbufalloc(0); //由于mbuf被net_rx使用，要重新申请一个mbuf给队列
+    desc->addr = (uint64)rx_mbufs[idx]->head; //建立rx_ring[idx]到这个新mbuf的映射
+    desc->status = 0; 
+    
+    regs[E1000_RDT] = idx; //更新tail指向的位置
+  }
 }
 
 void

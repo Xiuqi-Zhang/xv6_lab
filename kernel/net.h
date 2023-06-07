@@ -76,7 +76,8 @@ static inline uint32 bswapl(uint32 val)
 
 #define ETHADDR_LEN 6
 
-// an Ethernet packet header (start of the packet).
+// an Ethernet packet header (start of the packet)
+// 以太网帧的帧头结构：6B目的地址，6B源地址，2B类型
 struct eth {
   uint8  dhost[ETHADDR_LEN];
   uint8  shost[ETHADDR_LEN];
