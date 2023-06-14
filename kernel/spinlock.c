@@ -11,9 +11,11 @@
 #ifdef LAB_LOCK
 #define NLOCK 500
 
+//维护所有锁的数组，以及保护这个数组的锁lock_locks
 static struct spinlock *locks[NLOCK];
 struct spinlock lock_locks;
 
+//清除对应的锁
 void
 freelock(struct spinlock *lk)
 {
@@ -28,6 +30,7 @@ freelock(struct spinlock *lk)
   release(&lock_locks);
 }
 
+//在数组中找到一个空的锁
 static void
 findslot(struct spinlock *lk) {
   acquire(&lock_locks);
@@ -43,6 +46,7 @@ findslot(struct spinlock *lk) {
 }
 #endif
 
+//锁的初始化
 void
 initlock(struct spinlock *lk, char *name)
 {
@@ -52,7 +56,7 @@ initlock(struct spinlock *lk, char *name)
 #ifdef LAB_LOCK
   lk->nts = 0;
   lk->n = 0;
-  findslot(lk);
+  findslot(lk); //将这个锁映射到数组上
 #endif  
 }
 
@@ -73,6 +77,9 @@ acquire(struct spinlock *lk)
   //   a5 = 1
   //   s1 = &lk->locked
   //   amoswap.w.aq a5, a5, (s1)
+  //test_and_set指令，返回lk->locked的值，然后将之设置为1
+  //若本来就是1，表示锁已经被其他进程持有，自旋阻塞；
+  //若原来是0，则将之设置为1，跳出循环，持有该锁
   while(__sync_lock_test_and_set(&lk->locked, 1) != 0) {
 #ifdef LAB_LOCK
     __sync_fetch_and_add(&(lk->nts), 1);
@@ -115,6 +122,9 @@ release(struct spinlock *lk)
   // On RISC-V, sync_lock_release turns into an atomic swap:
   //   s1 = &lk->locked
   //   amoswap.w zero, zero, (s1)
+  //从概念上讲，释放只需要给`lk->locked`赋值为0。
+  //但是C标准允许编译器用多条存储指令来实现赋值，所以C赋值对于并发代码来说可能是非原子性的。
+  //所以我们使用sync_lock_release()函数原子性地赋值
   __sync_lock_release(&lk->locked);
 
   pop_off();

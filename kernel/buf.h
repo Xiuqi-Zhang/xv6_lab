@@ -5,8 +5,8 @@ struct buf {
   uint blockno;
   struct sleeplock lock;
   uint refcnt;
-  struct buf *prev; // LRU cache list
-  struct buf *next;
+  uint lastuse; //用于寻找LRU缓存
+  struct buf *next; 
   uchar data[BSIZE];
 };
 
