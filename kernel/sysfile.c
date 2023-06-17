@@ -316,51 +316,79 @@ sys_open(void)
 
   begin_op();
 
-  if(omode & O_CREATE){
+  if(omode & O_CREATE){  //创建文件
     ip = create(path, T_FILE, 0, 0);
     if(ip == 0){
       end_op();
       return -1;
     }
-  } else {
+  } else {  //若不是创建文件，获得path对应的inode结点
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
     }
     ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
+  }
+    
+  if(!(omode & O_NOFOLLOW) && ip->type == T_SYMLINK){ //若没有O_NOFOLLOW，即不是要打开软链接文件本身
+    uint cycle_left = 10;  //设置软链接最大递归查询次数，防止环状查询
+    struct inode* next_inode;  
+    while(cycle_left && ip->type == T_SYMLINK){  //当前文件是软链接且递归次数不为零则循环
+      if(readi(ip, 0, (uint64)path, 0, MAXPATH) == 0){  //将文件内容读入path，即软链接指向的文件路径
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      if((next_inode = namei(path)) == 0){  //找到文件路径指向的下一个文件inode
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      iunlockput(ip);  //当前inode使用完毕
+      ip = next_inode;  //递归
+      cycle_left--;  //查询次数减1
+      ilock(ip);  //加锁
+    }
+    if(!cycle_left){  //递归次数过多
       iunlockput(ip);
       end_op();
       return -1;
     }
   }
 
-  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){
+  if(ip->type == T_DIR && omode != O_RDONLY){  //目录文件
     iunlockput(ip);
     end_op();
     return -1;
   }
 
-  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+  if(ip->type == T_DEVICE && (ip->major < 0 || ip->major >= NDEV)){ 
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+  
+  if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){  //为文件分配空间
     if(f)
       fileclose(f);
     iunlockput(ip);
     end_op();
     return -1;
   }
-
-  if(ip->type == T_DEVICE){
+  
+  if(ip->type == T_DEVICE){  //设备文件
     f->type = FD_DEVICE;
     f->major = ip->major;
-  } else {
+  } else {  //普通文件
     f->type = FD_INODE;
     f->off = 0;
   }
+  
   f->ip = ip;
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
 
-  if((omode & O_TRUNC) && ip->type == T_FILE){
+  if((omode & O_TRUNC) && ip->type == T_FILE){  //销毁文件
     itrunc(ip);
   }
 
@@ -501,5 +529,31 @@ sys_pipe(void)
     fileclose(wf);
     return -1;
   }
+  return 0;
+}
+
+//建立一个target的软链接path
+uint64 
+sys_symlink(void)
+{
+  char target[MAXPATH], path[MAXPATH];
+  if(argstr(0, target, MAXPATH) == -1) return -1;
+  if(argstr(1, path, MAXPATH) == -1) return -1;
+  struct inode *ip;
+
+  begin_op();  //文件系统调用需要采用日志系统
+  
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){  //创建一个类型为软链接的inode文件
+    end_op();
+    return -1;
+  }
+  if(writei(ip, 0, (uint64)target, 0, strlen(target)) < 0){  //将target写入软链接
+    end_op();
+    return -1;
+  }
+  iunlockput(ip); //使用结束inode的标准操作：释放inode锁，然后将inode的引用减1
+
+  end_op();
+
   return 0;
 }

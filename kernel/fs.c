@@ -61,7 +61,6 @@ bzero(int dev, int bno)
 // Blocks.
 
 // Allocate a zeroed disk block.
-// returns 0 if out of disk space.
 static uint
 balloc(uint dev)
 {
@@ -83,8 +82,7 @@ balloc(uint dev)
     }
     brelse(bp);
   }
-  printf("balloc: out of blocks\n");
-  return 0;
+  panic("balloc: out of blocks");
 }
 
 // Free a disk block.
@@ -111,8 +109,8 @@ bfree(int dev, uint b)
 // its size, the number of links referring to it, and the
 // list of blocks holding the file's content.
 //
-// The inodes are laid out sequentially on disk at block
-// sb.inodestart. Each inode has a number, indicating its
+// The inodes are laid out sequentially on disk at
+// sb.startinode. Each inode has a number, indicating its
 // position on the disk.
 //
 // The kernel keeps a table of in-use inodes in memory
@@ -193,15 +191,13 @@ static struct inode* iget(uint dev, uint inum);
 
 // Allocate an inode on device dev.
 // Mark it as allocated by  giving it type type.
-// Returns an unlocked but allocated and referenced inode,
-// or NULL if there is no free inode.
+// Returns an unlocked but allocated and referenced inode.
 struct inode*
 ialloc(uint dev, short type)
 {
   int inum;
   struct buf *bp;
   struct dinode *dip;
-
   for(inum = 1; inum < sb.ninodes; inum++){
     bp = bread(dev, IBLOCK(inum, sb));
     dip = (struct dinode*)bp->data + inum%IPB;
@@ -214,8 +210,7 @@ ialloc(uint dev, short type)
     }
     brelse(bp);
   }
-  printf("ialloc: no inodes\n");
-  return 0;
+  panic("ialloc: no inodes");
 }
 
 // Copy a modified in-memory inode to disk.
@@ -228,8 +223,8 @@ iupdate(struct inode *ip)
   struct buf *bp;
   struct dinode *dip;
 
-  bp = bread(ip->dev, IBLOCK(ip->inum, sb));
-  dip = (struct dinode*)bp->data + ip->inum%IPB;
+  bp = bread(ip->dev, IBLOCK(ip->inum, sb)); // 取得储存 ip 的块缓存
+  dip = (struct dinode*)bp->data + ip->inum%IPB; // dip 是 inode 的块缓存（ip 块缓存加上一定偏移量）
   dip->type = ip->type;
   dip->major = ip->major;
   dip->minor = ip->minor;
@@ -378,46 +373,58 @@ iunlockput(struct inode *ip)
 
 // Return the disk block address of the nth block in inode ip.
 // If there is no such block, bmap allocates one.
-// returns 0 if out of disk space.
 static uint
 bmap(struct inode *ip, uint bn)
 {
   uint addr, *a;
   struct buf *bp;
 
-  if(bn < NDIRECT){
-    if((addr = ip->addrs[bn]) == 0){
-      addr = balloc(ip->dev);
-      if(addr == 0)
-        return 0;
-      ip->addrs[bn] = addr;
-    }
+  if(bn < NDIRECT){  //直接索引区
+    if((addr = ip->addrs[bn]) == 0) //若没有bn数据块
+      ip->addrs[bn] = addr = balloc(ip->dev);  //分配
     return addr;
   }
-  bn -= NDIRECT;
+  bn -= NDIRECT; 
 
-  if(bn < NINDIRECT){
+  if(bn < NINDIRECT){  //一级间接索引区
     // Load indirect block, allocating if necessary.
-    if((addr = ip->addrs[NDIRECT]) == 0){
-      addr = balloc(ip->dev);
-      if(addr == 0)
-        return 0;
-      ip->addrs[NDIRECT] = addr;
-    }
-    bp = bread(ip->dev, addr);
-    a = (uint*)bp->data;
-    if((addr = a[bn]) == 0){
-      addr = balloc(ip->dev);
-      if(addr){
-        a[bn] = addr;
-        log_write(bp);
-      }
+    if((addr = ip->addrs[NDIRECT]) == 0) //若一级间接索引块为空      
+      ip->addrs[NDIRECT] = addr = balloc(ip->dev);  //分配
+    bp = bread(ip->dev, addr); //读入间接索引块
+    a = (uint*)bp->data;  //a指向索引块数据
+    if((addr = a[bn]) == 0){  //若没有bn数据块
+      a[bn] = addr = balloc(ip->dev);  //申请分配
+      log_write(bp);  //写回
     }
     brelse(bp);
     return addr;
   }
+  bn -= NINDIRECT;
 
-  panic("bmap: out of range");
+  if(bn < NBI_INDIRECT){  //二级间接索引区
+    if((addr = ip->addrs[NDIRECT+1]) == 0) //若二级间接索引块的第一级为空
+      ip->addrs[NDIRECT+1] = addr = balloc(ip->dev);  //分配 
+    bp = bread(ip->dev, addr); //读入二级间接索引的第一级
+    a = (uint*)bp->data; 
+    uint num = bn / NINDIRECT; //计算出第二级的块号
+    if((addr = a[num]) == 0){ //若第二级块为空
+      a[num] = addr = balloc(ip->dev);
+      log_write(bp);
+    }
+    brelse(bp); //修改了第一级块，释放第一级块缓存
+
+    bp = bread(ip->dev, a[num]); //读入第二级块
+    bn %= NINDIRECT;  
+    a = (uint*)bp->data;  
+    if((addr = a[bn]) == 0){  //若没有bn数据块
+      a[bn] = addr = balloc(ip->dev);
+      log_write(bp);  //写回
+    }
+    brelse(bp);  //释放第二级块缓存
+    return addr;
+  }
+  
+  panic("bmap: out of range!");
 }
 
 // Truncate inode (discard contents).
@@ -426,16 +433,18 @@ void
 itrunc(struct inode *ip)
 {
   int i, j;
-  struct buf *bp;
-  uint *a;
+  struct buf *bp, *bp2;
+  uint *a, *b;
 
-  for(i = 0; i < NDIRECT; i++){
+  //释放直接块
+  for(i = 0; i < NDIRECT; i++){ 
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
       ip->addrs[i] = 0;
     }
   }
 
+  //释放一级间接索引块
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
@@ -448,9 +457,31 @@ itrunc(struct inode *ip)
     ip->addrs[NDIRECT] = 0;
   }
 
+  //释放二级间接索引块
+  if(ip->addrs[NDIRECT+1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT+1]);  //读取二级间接索引第一级
+    a = (uint*)bp->data;
+    for(i = 0; i < NINDIRECT; i++){  //遍历第一级的每一项
+      if(a[i]){  //若不为空
+        bp2 = bread(ip->dev, a[i]);  //读取二级间接索引第二级
+        b = (uint*)bp2->data;
+        for(j = 0; j < NINDIRECT; j++){  //遍历第二级的每一项
+          if(b[j])  //若不为空
+            bfree(ip->dev, b[j]);  //先释放第二级每一项 
+        }
+        brelse(bp2);  //第二级处理完毕，释放第二级缓存
+        bfree(ip->dev, a[i]);  //再释放第一级每一项
+      }
+    } 
+    brelse(bp);  //第一级处理完毕，释放第一级缓存
+    bfree(ip->dev, ip->addrs[NDIRECT+1]);  //最后释放二级间接索引块
+    ip->addrs[NDIRECT+1] = 0;
+  }
+
   ip->size = 0;
-  iupdate(ip);
+  iupdate(ip);  //更新
 }
+
 
 // Copy stat information from inode.
 // Caller must hold ip->lock.
@@ -468,6 +499,7 @@ stati(struct inode *ip, struct stat *st)
 // Caller must hold ip->lock.
 // If user_dst==1, then dst is a user virtual address;
 // otherwise, dst is a kernel address.
+// 读取 inode 文件中的内容，放到 dst 中
 int
 readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 {
@@ -480,10 +512,7 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
     n = ip->size - off;
 
   for(tot=0; tot<n; tot+=m, off+=m, dst+=m){
-    uint addr = bmap(ip, off/BSIZE);
-    if(addr == 0)
-      break;
-    bp = bread(ip->dev, addr);
+    bp = bread(ip->dev, bmap(ip, off/BSIZE));
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyout(user_dst, dst, bp->data + (off % BSIZE), m) == -1) {
       brelse(bp);
@@ -502,6 +531,7 @@ readi(struct inode *ip, int user_dst, uint64 dst, uint off, uint n)
 // Returns the number of bytes successfully written.
 // If the return value is less than the requested n,
 // there was an error of some kind.
+//向inode中写入数据
 int
 writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
 {
@@ -514,10 +544,7 @@ writei(struct inode *ip, int user_src, uint64 src, uint off, uint n)
     return -1;
 
   for(tot=0; tot<n; tot+=m, off+=m, src+=m){
-    uint addr = bmap(ip, off/BSIZE);
-    if(addr == 0)
-      break;
-    bp = bread(ip->dev, addr);
+    bp = bread(ip->dev, bmap(ip, off/BSIZE));
     m = min(n - tot, BSIZE - off%BSIZE);
     if(either_copyin(bp->data + (off % BSIZE), user_src, src, m) == -1) {
       brelse(bp);
@@ -575,7 +602,6 @@ dirlookup(struct inode *dp, char *name, uint *poff)
 }
 
 // Write a new directory entry (name, inum) into the directory dp.
-// Returns 0 on success, -1 on failure (e.g. out of disk blocks).
 int
 dirlink(struct inode *dp, char *name, uint inum)
 {
@@ -600,7 +626,7 @@ dirlink(struct inode *dp, char *name, uint inum)
   strncpy(de.name, name, DIRSIZ);
   de.inum = inum;
   if(writei(dp, 0, (uint64)&de, off, sizeof(de)) != sizeof(de))
-    return -1;
+    panic("dirlink");
 
   return 0;
 }
@@ -683,6 +709,7 @@ namex(char *path, int nameiparent, char *name)
   return ip;
 }
 
+//返回path所指向的inode结点
 struct inode*
 namei(char *path)
 {
